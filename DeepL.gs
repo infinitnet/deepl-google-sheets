@@ -22,14 +22,20 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
  */
 
-/* Please change the line below */
-const authKey = "b493b8ef-0176-215d-82fe-e28f182c9544:fx"; // Replace with your authentication key
+// Securely store and retrieve the authentication key
+function getAuthKey() {
+  const userProperties = PropertiesService.getUserProperties();
+  return userProperties.getProperty('DEEPL_AUTH_KEY');
+}
 
-/* Change the line below to disable all translations. */
-const disableTranslations = false; // Set to true to stop translations.
+function setAuthKey(key) {
+  const userProperties = PropertiesService.getUserProperties();
+  userProperties.setProperty('DEEPL_AUTH_KEY', key);
+}
 
-/* Change the line below to activate auto-detection of re-translations. */
-const activateAutoDetect = false; // Set to true to enable auto-detection of re-translation.
+// Configuration flags
+const DISABLE_TRANSLATIONS = false; // Set to true to stop translations.
+const ACTIVATE_AUTO_DETECT = false; // Set to true to enable auto-detection of re-translation.
 
 /* You shouldn't need to modify the lines below here */
 
@@ -56,12 +62,25 @@ function DeepLTranslate(input,
                         glossaryId,
                         options
 ) {
-    if (input === undefined) {
-        throw new Error("input field is undefined, please specify the text to translate.");
+    const authKey = getAuthKey();
+    if (!authKey) {
+        throw new Error("Authentication key is not set. Please set it using setAuthKey() function.");
+    }
+
+    if (input === undefined || input === '') {
+        throw new Error("Input field is empty or undefined. Please specify the text to translate.");
     } else if (typeof input === "number") {
         input = input.toString();
     } else if (typeof input !== "string") {
-        throw new Error("input text must be a string.");
+        throw new Error("Input text must be a string.");
+    }
+
+    // Validate source and target languages
+    if (sourceLang && !isValidLanguage(sourceLang)) {
+        throw new Error("Invalid source language code.");
+    }
+    if (targetLang && !isValidLanguage(targetLang)) {
+        throw new Error("Invalid target language code.");
     }
     // Check the current cell to detect recalculations due to reopening the sheet
     const cell = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet().getCurrentCell();
@@ -119,6 +138,11 @@ function DeepLTranslate(input,
  * @customfunction
  */
 function DeepLUsage(type) {
+    const authKey = getAuthKey();
+    if (!authKey) {
+        throw new Error("Authentication key is not set. Please set it using setAuthKey() function.");
+    }
+
     const response = httpRequestWithRetries_('get', '/v2/usage');
     checkResponse_(response);
     const responseObject = JSON.parse(response.getContentText());
@@ -126,12 +150,17 @@ function DeepLUsage(type) {
     const charLimit = responseObject.character_limit;
     if (charCount === undefined || charLimit === undefined)
         throw new Error('Character usage not found.');
-    if (type) {
-        if (type === 'count') return charCount;
-        if (type === 'limit') return charLimit;
-        throw new Error('Unrecognized type argument.');
+    
+    switch(type) {
+        case 'count':
+            return charCount;
+        case 'limit':
+            return charLimit;
+        case undefined:
+            return `${charCount} of ${charLimit} characters used.`;
+        default:
+            throw new Error('Unrecognized type argument. Use "count", "limit", or leave empty.');
     }
-    return `${charCount} of ${charLimit} characters used.`;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -203,6 +232,11 @@ function checkResponse_(response) {
  * Helper function to execute HTTP requests and retry failed requests.
  */
 function httpRequestWithRetries_(method, relativeUrl, formData = null, charCount = 0) {
+    const authKey = getAuthKey();
+    if (!authKey) {
+        throw new Error("Authentication key is not set. Please set it using setAuthKey() function.");
+    }
+
     const baseUrl = authKey.endsWith(':fx')
         ? 'https://api-free.deepl.com'
         : 'https://api.deepl.com';
@@ -226,15 +260,16 @@ function httpRequestWithRetries_(method, relativeUrl, formData = null, charCount
                 return response;
             }
         } catch (e) {
-            // It would be sensible to check whether the exception is retryable here, but there is
-            // not so much documentation on Google Apps Script exceptions. In addition, UrlFetchApp
-            // fetch timeouts are very long and not configurable.
-            throw e;
+            if (e.toString().includes('Timeout')) {
+                Logger.log(`Request timed out. Retrying...`);
+            } else {
+                throw e; // Rethrow non-timeout errors
+            }
         }
         Logger.log(`Retrying after ${numRetries} failed requests.`);
         sleepForBackoff(numRetries, lastRequestTime);
     }
-    return response;
+    throw new Error("Max retries reached. Unable to complete the request.");
 }
 
 /**
